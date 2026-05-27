@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.painterResource
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -101,8 +102,37 @@ fun MainScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
+    // --- Toast / Indicator managers ---
+    var toastMsg by remember { mutableStateOf("") }
+    var toastVisible by remember { mutableStateOf(false) }
+
+    // Custom HUD Toast Launcher
+    fun showToast(msg: String) {
+        toastMsg = msg
+        toastVisible = true
+    }
+
+    LaunchedEffect(toastVisible) {
+        if (toastVisible) {
+            delay(2600)
+            toastVisible = false
+        }
+    }
+
     // --- State Managers ----
     val pages = remember { mutableStateListOf<ScanPage>() }
+    var selectedFolderUri by remember { mutableStateOf<Uri?>(null) }
+    var selectedFolderName by remember { mutableStateOf<String?>("Not Selected") }
+
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            selectedFolderUri = uri
+            selectedFolderName = uri.lastPathSegment ?: "Custom Folder"
+            showToast("📁 Folder Linked: $selectedFolderName")
+        }
+    }
     var activeIdx by remember { mutableIntStateOf(0) }
     var viewMode by remember { mutableStateOf("scanned") } // "scanned" | "original" | "compare" | "crop"
     var cropMode by remember { mutableStateOf(false) }
@@ -134,21 +164,6 @@ fun MainScreen(modifier: Modifier = Modifier) {
     val canUndo = histPtr > 0
 
     // --- Toast / Indicator managers ---
-    var toastMsg by remember { mutableStateOf("") }
-    var toastVisible by remember { mutableStateOf(false) }
-
-    // Custom HUD Toast Launcher
-    fun showToast(msg: String) {
-        toastMsg = msg
-        toastVisible = true
-    }
-
-    LaunchedEffect(toastVisible) {
-        if (toastVisible) {
-            delay(2600)
-            toastVisible = false
-        }
-    }
 
     // Capture View flag
     var showCameraView by remember { mutableStateOf(false) }
@@ -591,6 +606,175 @@ fun MainScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    fun saveAllAsJpg() {
+        if (pages.isEmpty()) {
+            showToast("⚠️ Nothing to save")
+            return
+        }
+        busy = true
+        coroutineScope.launch(Dispatchers.Default) {
+            var saved = 0
+            try {
+                for (i in pages.indices) {
+                    val p = pages[i]
+                    val bmp = p.processedBitmap ?: p.originalBitmap
+                    val outName = "scan_${System.currentTimeMillis()}_${i + 1}.jpg"
+                    
+                    val file = File(context.cacheDir, outName)
+                    FileOutputStream(file).use { out ->
+                        bmp.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                    }
+                    
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, outName)
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameScanner_JPG")
+                            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                    }
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        resolver.openOutputStream(uri).use { stream ->
+                            if (stream != null) {
+                                bmp.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                            }
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            values.clear()
+                            values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                            resolver.update(uri, values, null, null)
+                        }
+                        saved++
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    showToast("💾 Saved $saved pages as JPG in Gallery")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    showToast("❌ Error saving JPGs: ${e.message}")
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    busy = false
+                }
+            }
+        }
+    }
+
+    fun saveAllAsPng() {
+        if (pages.isEmpty()) {
+            showToast("⚠️ Nothing to save")
+            return
+        }
+        busy = true
+        coroutineScope.launch(Dispatchers.Default) {
+            var saved = 0
+            try {
+                for (i in pages.indices) {
+                    val p = pages[i]
+                    val bmp = p.processedBitmap ?: p.originalBitmap
+                    val outName = "scan_${System.currentTimeMillis()}_${i + 1}.png"
+                    
+                    val file = File(context.cacheDir, outName)
+                    FileOutputStream(file).use { out ->
+                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, outName)
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CameScanner_PNG")
+                            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                    }
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        resolver.openOutputStream(uri).use { stream ->
+                            if (stream != null) {
+                                bmp.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                            }
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            values.clear()
+                            values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                            resolver.update(uri, values, null, null)
+                        }
+                        saved++
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    showToast("🖼️ Saved $saved pages as PNG in Gallery")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    showToast("❌ Error saving PNGs: ${e.message}")
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    busy = false
+                }
+            }
+        }
+    }
+
+    fun saveAllToGallery() {
+        if (pages.isEmpty()) {
+            showToast("⚠️ Nothing to save")
+            return
+        }
+        busy = true
+        coroutineScope.launch(Dispatchers.Default) {
+            var saved = 0
+            try {
+                for (i in pages.indices) {
+                    val p = pages[i]
+                    val bmp = p.processedBitmap ?: p.originalBitmap
+                    val outName = "camescanner_gallery_${System.currentTimeMillis()}_${i + 1}.jpg"
+                    
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, outName)
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "DCIM/CameScanner")
+                            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                        }
+                    }
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        resolver.openOutputStream(uri).use { stream ->
+                            if (stream != null) {
+                                bmp.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                            }
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            values.clear()
+                            values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                            resolver.update(uri, values, null, null)
+                        }
+                        saved++
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    showToast("🏞️ Added $saved pages to primary Device Gallery")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    showToast("❌ Gallery export error: ${e.message}")
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    busy = false
+                }
+            }
+        }
+    }
+
     // --- RENDER SCREEN BODY ---
     Box(
         modifier = modifier
@@ -604,373 +788,242 @@ fun MainScreen(modifier: Modifier = Modifier) {
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Title Header HUD block styled as a Bento Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            if (pages.isEmpty()) {
+                // 1st Row: Logo and Name of App
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
+                            .size(56.dp)
                             .background(
                                 brush = androidx.compose.ui.graphics.Brush.linearGradient(
-                                    colors = listOf(Color(0xFF0061A4), Color(0xFF5B8DF5))
+                                    colors = listOf(Color(0xFFFFFFFF), Color(0xFFF3F4F9))
                                 ),
-                                shape = RoundedCornerShape(14.dp)
-                            ),
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .border(1.5.dp, Color(0xFF1B1B1F).copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                            .testTag("app_logo"),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "⚡",
-                            fontSize = 21.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            contentDescription = "App Logo Icon",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(46.dp)
                         )
                     }
 
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
 
                     Column {
                         Text(
-                            text = "Came-Scanner",
+                            text = "Came Scanner",
                             color = Color(0xFF1B1B1F),
-                            fontSize = 24.sp,
+                            fontSize = 28.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = (-0.5).sp
                         )
                         Text(
-                            text = "Powered by Ali-Tools ✦ Bento UI Edition",
+                            text = "Powered By Ali-Tools Company.",
                             color = Color(0xFF55597D),
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             fontFamily = FontFamily.Monospace,
                             modifier = Modifier.padding(top = 1.dp)
                         )
                     }
                 }
 
-                // Fast camera button header access
-                IconButton(
-                    onClick = { showCameraView = true },
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 2nd Row: Camera App Row
+                Card(
                     modifier = Modifier
-                        .size(44.dp)
-                        .background(Color(0xFF0061A4).copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                        .border(1.5.dp, Color(0xFF0061A4).copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                        .fillMaxWidth()
+                        .height(160.dp)
+                        .clip(RoundedCornerShape(28.dp))
+                        .clickable { showCameraView = true }
+                        .testTag("camera_app_row"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFD1E4FF)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoCamera,
-                        contentDescription = "Capture Document page",
-                        tint = Color(0xFF0061A4),
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Simulated Search Bar / status indicator
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFE1E2E9))
-                    .clickable { showCameraView = true }
-                    .padding(horizontal = 16.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Search icon",
-                            tint = Color(0xFF44474E).copy(alpha = 0.7f),
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = if (pages.isEmpty()) "Search scans or tap to snap..." else "Bento mode: ${pages.size} page(s) ready to compile",
-                            color = Color(0xFF44474E),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFD1E4FF)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "JD",
-                            color = Color(0xFF001D36),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            letterSpacing = (-0.5).sp
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // --- EMPTY STATE BENTO GRID LAYOUT ----
-            if (pages.isEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    // Bento Large Welcome/Storage Card
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(Color(0xFFD1E4FF))
-                            .clickable {
-                                galleryPickLauncher.launch(
-                                    PickVisualMediaRequest(
-                                        ActivityResultContracts.PickVisualMedia.ImageOnly
-                                    )
-                                )
-                            }
-                            .padding(24.dp)
-                    ) {
-                        Column {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .background(Color(0xFF0061A4), RoundedCornerShape(16.dp))
-                                        .padding(12.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Description,
-                                        contentDescription = "Scan icon",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .background(Color.White.copy(alpha = 0.4f), CircleShape)
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                                ) {
-                                    Text(
-                                        text = "Optimizer-AI",
-                                        color = Color(0xFF0061A4),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(28.dp))
-
-                            Text(
-                                text = "Doc Space Storage",
-                                color = Color(0xFF001D36),
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            // Simulated storage progress bar
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(10.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF001D36).copy(alpha = 0.1f))
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxHeight()
-                                        .fillMaxWidth(0.12f) // Empty/low use indicator
-                                        .background(Color(0xFF0061A4))
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                text = "0 loaded scan pages in standard cache space",
-                                color = Color(0xFF001D36).copy(alpha = 0.7f),
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-
-                    // Bento Row for Small Quick Actions (Gallery & Camera)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // Left Bento Small (Gallery Import)
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(160.dp)
-                                .clip(RoundedCornerShape(28.dp))
-                                .background(Color(0xFFF6D9FF))
-                                .clickable {
-                                    galleryPickLauncher.launch(
-                                        PickVisualMediaRequest(
-                                            ActivityResultContracts.PickVisualMedia.ImageOnly
-                                        )
-                                    )
-                                }
-                                .padding(18.dp),
-                            contentAlignment = Alignment.BottomStart
-                        ) {
-                            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .background(Color(0xFF7B4193), RoundedCornerShape(14.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Collections,
-                                        contentDescription = "Gallery",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Column {
-                                    Text(
-                                        text = "Select Photo",
-                                        color = Color(0xFF2C1339),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        letterSpacing = (-0.2).sp
-                                    )
-                                    Text(
-                                        text = "From device files",
-                                        color = Color(0xFF2C1339).copy(alpha = 0.6f),
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        // Right Bento Small (Camera Capture)
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(160.dp)
-                                .clip(RoundedCornerShape(28.dp))
-                                .background(Color(0xFFD3E4FF))
-                                .clickable { showCameraView = true }
-                                .padding(18.dp),
-                            contentAlignment = Alignment.BottomStart
-                        ) {
-                            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .background(Color(0xFF0061A4), RoundedCornerShape(14.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PhotoCamera,
-                                        contentDescription = "Camera",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Column {
-                                    Text(
-                                        text = "Camera Snap",
-                                        color = Color(0xFF001D36),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        letterSpacing = (-0.2).sp
-                                    )
-                                    Text(
-                                        text = "From clean scanner lens",
-                                        color = Color(0xFF001D36).copy(alpha = 0.6f),
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Bento Medium Highlight (Tips or Instructions)
-                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(Color.White)
-                            .border(1.dp, Color(0xFFE1E2E9), RoundedCornerShape(28.dp))
-                            .clickable {
-                                galleryPickLauncher.launch(
-                                    PickVisualMediaRequest(
-                                        ActivityResultContracts.PickVisualMedia.ImageOnly
-                                    )
-                                )
-                            }
-                            .padding(18.dp)
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(64.dp)
-                                    .background(Color(0xFFFFDAD6), RoundedCornerShape(20.dp)),
+                                    .size(46.dp)
+                                    .background(Color(0xFF0061A4), RoundedCornerShape(14.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = "AI Scanner Pro",
-                                    tint = Color(0xFF93000A),
-                                    modifier = Modifier.size(28.dp)
+                                    imageVector = Icons.Default.PhotoCamera,
+                                    contentDescription = "Camera Icon",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
                                 )
                             }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Auto Perspective Engine",
-                                    color = Color(0xFF1B1B1F),
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 16.sp
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Open Camera Scanner",
+                                color = Color(0xFF001D36),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "Snap clear images from the scanner lens",
+                                color = Color(0xFF001D36).copy(alpha = 0.7f),
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ArrowForward,
+                            contentDescription = "Go",
+                            tint = Color(0xFF0061A4),
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 3rd Row: Select Photo
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(160.dp)
+                        .clip(RoundedCornerShape(28.dp))
+                        .clickable {
+                            galleryPickLauncher.launch(
+                                PickVisualMediaRequest(
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly
                                 )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Auto-detect document boundaries, crop paper borders with precision, correct tilts, and lift contrast using the Magic Clean filter presets.",
-                                    color = Color(0xFF44474E),
-                                    fontSize = 12.sp,
-                                    lineHeight = 16.sp
-                                )
-                            }
+                            )
+                        }
+                        .testTag("select_photo_row"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF6D9FF)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
+                        ) {
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
-                                    .background(Color(0xFFF3F4F9), CircleShape),
+                                    .size(46.dp)
+                                    .background(Color(0xFF7B4193), RoundedCornerShape(14.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.ChevronRight,
-                                    contentDescription = "Arrow details",
-                                    tint = Color(0xFF44474E),
-                                    modifier = Modifier.size(20.dp)
+                                    imageVector = Icons.Default.Collections,
+                                    contentDescription = "Gallery Icon",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
                                 )
                             }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Select Photo",
+                                color = Color(0xFF2C1339),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "Import multiple or single images from your device",
+                                color = Color(0xFF2C1339).copy(alpha = 0.7f),
+                                fontSize = 12.sp
+                            )
                         }
+                        Icon(
+                            imageVector = Icons.Default.ArrowForward,
+                            contentDescription = "Go",
+                            tint = Color(0xFF7B4193),
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 4th Row: Select Folder Button
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(160.dp)
+                        .clip(RoundedCornerShape(28.dp))
+                        .clickable {
+                            try {
+                                folderPickerLauncher.launch(null)
+                            } catch (e: Exception) {
+                                showToast("⚠️ Standard system folder picker not found")
+                            }
+                        }
+                        .testTag("select_folder_row"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFE2F1E8)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .background(Color(0xFF00897B), RoundedCornerShape(14.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Folder,
+                                    contentDescription = "Folder Icon",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Select Folder",
+                                color = Color(0xFF00302D),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = if (selectedFolderName == "Not Selected") "Link output directory to save scans" else "Linked: $selectedFolderName",
+                                color = Color(0xFF00302D).copy(alpha = 0.7f),
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen,
+                            contentDescription = "Folder Options",
+                            tint = Color(0xFF00897B),
+                            modifier = Modifier.size(32.dp)
+                        )
                     }
                 }
             }
@@ -1342,6 +1395,55 @@ fun MainScreen(modifier: Modifier = Modifier) {
                                     onClick = { resetAllScans(pages, { activeIdx = 0 }, { viewMode = "scanned" }, { cropMode = false }) }
                                 )
                             }
+                        }
+                    }
+                }
+
+                // --- BATCH MULTI-SAVE OPTIONS CARD ---
+                Spacer(modifier = Modifier.height(14.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color(0xFFFFFAF0)) // Warm inviting cream bento highlight
+                        .border(1.dp, Color(0xFFE1E2E9), RoundedCornerShape(24.dp))
+                        .padding(16.dp)
+                ) {
+                    Column {
+                        SectionHeader(text = "BATCH MULTI-SAVE UTILITIES")
+                        Spacer(modifier = Modifier.height(10.dp))
+                        
+                        Text(
+                            text = "Save all ${pages.size} loaded document photos instantly:",
+                            color = Color(0xFF44474E),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ActionGridButton(
+                                    text = "💾 Save All JPG", 
+                                    modifier = Modifier.weight(1f), 
+                                    isFill = true,
+                                    tintColor = Color(0xFFE65100), // Vibrant orange accent
+                                    onClick = { saveAllAsJpg() }
+                                )
+                                ActionGridButton(
+                                    text = "🖼️ Save All PNG", 
+                                    modifier = Modifier.weight(1f), 
+                                    isFill = true,
+                                    tintColor = Color(0xFF0D47A1), // Deep high-contrast blue
+                                    onClick = { saveAllAsPng() }
+                                )
+                            }
+                            ActionGridButton(
+                                text = "🏞️ Save to Device Gallery Folder", 
+                                modifier = Modifier.fillMaxWidth(),
+                                isFill = true,
+                                tintColor = Color(0xFF1B5E20), // Primary green progress indicator
+                                onClick = { saveAllToGallery() }
+                            )
                         }
                     }
                 }
