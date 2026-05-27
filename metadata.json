@@ -1,0 +1,6 @@
+{
+  "name": "Came-Scanner",
+  "description": "An AI-powered document scanner with advanced enhancement filters, auto document boundary detection, fine-grained adjustments, and multi-page PDF/ZIP export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
