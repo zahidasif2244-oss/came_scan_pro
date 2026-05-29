@@ -374,7 +374,7 @@ fun MainScreen(modifier: Modifier = Modifier) {
         val pr = Presets.map[key] ?: return
         pushHistory()
         
-        // Triggers sliders state change which instantly schedules reprocessing
+        // Triggers sliders state change which instantly schedules reprocessing for active page
         thresholdVal = pr.settings.threshold
         contrastVal = pr.settings.contrast
         brightnessVal = pr.settings.brightness
@@ -383,7 +383,39 @@ fun MainScreen(modifier: Modifier = Modifier) {
         saturationVal = pr.settings.saturation
         colorModeVal = pr.colorMode
         activePreset = key
-        showToast("🎨 Filter: ${pr.label}")
+        
+        // Automatically apply the chosen filter to all loaded pages in background
+        if (pages.size > 1) {
+            busy = true
+            coroutineScope.launch {
+                withContext(Dispatchers.Default) {
+                    val prSettings = pr.settings.clone()
+                    val prColor = pr.colorMode
+                    for (i in pages.indices) {
+                        if (i == activeIdx) continue
+                        val pg = pages[i]
+                        val outBmp = ImageProcessor.processImage(
+                            src = pg.originalBitmap,
+                            settings = prSettings,
+                            colorMode = prColor,
+                            rotation = pg.rotation
+                        )
+                        pg.settings = prSettings.clone()
+                        pg.colorMode = prColor
+                        pg.processedBitmap = outBmp
+                        pages[i] = pg.copy(
+                            settings = prSettings.clone(),
+                            colorMode = prColor,
+                            processedBitmap = outBmp
+                        )
+                    }
+                }
+                busy = false
+                showToast("🎨 Filter '${pr.label}' automatically applied to all ${pages.size} pages at once")
+            }
+        } else {
+            showToast("🎨 Filter: ${pr.label}")
+        }
     }
 
     fun applyToAll() {

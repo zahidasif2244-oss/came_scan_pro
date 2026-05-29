@@ -112,6 +112,7 @@ fun CameraPreviewContent(
     val previewView = remember { PreviewView(context) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     
+    var cameraInstance by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
     var flashEnabled by remember { mutableStateOf(false) }
     var gridEnabled by remember { mutableStateOf(false) }
     var manualMode by remember { mutableStateOf(false) }
@@ -124,8 +125,49 @@ fun CameraPreviewContent(
     val modes = listOf("Id Card", "Passport", "QR Code", "Documents", "Photo")
     var selectedModeIdx by remember { mutableStateOf(1) } // Default to Passport (index 1) exactly as shown in reference
 
-    LaunchedEffect(flashEnabled) {
+    // Auto-select standard camera functions when modes change
+    LaunchedEffect(selectedModeIdx) {
+        when (selectedModeIdx) {
+            0 -> { // Id Card
+                flashEnabled = true // Enable lens highlight light for details
+                gridEnabled = true
+                aspectPreset = 2
+                manualMode = false
+            }
+            1 -> { // Passport
+                flashEnabled = false
+                gridEnabled = true
+                aspectPreset = 2
+                manualMode = false
+            }
+            2 -> { // QR Code
+                flashEnabled = true // Auto torch for rapid code scan
+                gridEnabled = false
+                aspectPreset = 1
+                manualMode = false
+            }
+            3 -> { // Documents
+                flashEnabled = false
+                gridEnabled = true
+                aspectPreset = 2
+                manualMode = false
+            }
+            4 -> { // Photo
+                flashEnabled = false
+                gridEnabled = false
+                aspectPreset = 0
+                manualMode = true
+            }
+        }
+    }
+
+    LaunchedEffect(flashEnabled, cameraInstance) {
         imageCapture.flashMode = if (flashEnabled) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+        try {
+            cameraInstance?.cameraControl?.enableTorch(flashEnabled)
+        } catch (e: Exception) {
+            Log.e("CameraCaptureView", "Error configuring torch state", e)
+        }
     }
 
     LaunchedEffect(previewView, isBackCamera) {
@@ -139,12 +181,13 @@ fun CameraPreviewContent(
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                val boundCamera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
                     preview,
                     imageCapture
                 )
+                cameraInstance = boundCamera
             } catch (e: Exception) {
                 Log.e("CameraCaptureView", "Binding failed", e)
             }
@@ -311,34 +354,73 @@ fun CameraPreviewContent(
                     val w = size.width
                     val h = size.height
 
-                    // Dynamic margin based on selected mode
-                    val marginPercentW = if (selectedModeIdx == 2) 0.20f else 0.08f // QR core is smaller square
-                    val marginPercentH = if (selectedModeIdx == 2) 0.30f else 0.12f
+                    val finderWidth = when (selectedModeIdx) {
+                        0 -> w * 0.90f // Id Card
+                        1 -> w * 0.90f // Passport
+                        2 -> w * 0.70f // QR Code
+                        3 -> w * 0.82f // Documents
+                        else -> w      // Photo
+                    }
 
-                    val left = w * marginPercentW
-                    val top = h * marginPercentH
-                    val right = w - (w * marginPercentW)
-                    val bottom = h - (h * marginPercentH)
+                    val finderHeight = when (selectedModeIdx) {
+                        0 -> finderWidth / 1.58f // Id Card aspect ratio
+                        1 -> finderWidth / 1.42f // Passport aspect ratio
+                        2 -> finderWidth         // QR Code ratio 1:1
+                        3 -> {
+                            val targetH = finderWidth * 1.35f
+                            if (targetH > h * 0.75f) h * 0.75f else targetH
+                        }
+                        else -> h                // Photo fullscreen
+                    }
 
-                    val strokeW = 4.dp.toPx()
-                    val cornerLength = 32.dp.toPx()
-                    val cornerColor = Color.White
+                    val left = (w - finderWidth) / 2f
+                    val top = (h - finderHeight) / 2f
+                    val right = left + finderWidth
+                    val bottom = top + finderHeight
 
-                    // 1. Top-Left L Guide
-                    drawLine(cornerColor, Offset(left, top), Offset(left + cornerLength, top), strokeW)
-                    drawLine(cornerColor, Offset(left, top), Offset(left, top + cornerLength), strokeW)
+                    // 1. Draw Translucent Overlay Mask for non-target region to physically "change screen sizes"
+                    if (selectedModeIdx < 4) { // Photo mode is fullscreen/clear
+                        // Top mask
+                        drawRect(Color.Black.copy(alpha = 0.55f), Offset(0f, 0f), Size(w, top))
+                        // Bottom mask
+                        drawRect(Color.Black.copy(alpha = 0.55f), Offset(0f, bottom), Size(w, h - bottom))
+                        // Left mask
+                        drawRect(Color.Black.copy(alpha = 0.55f), Offset(0f, top), Size(left, finderHeight))
+                        // Right mask
+                        drawRect(Color.Black.copy(alpha = 0.55f), Offset(right, top), Size(w - right, finderHeight))
 
-                    // 2. Top-Right L Guide
-                    drawLine(cornerColor, Offset(right, top), Offset(right - cornerLength, top), strokeW)
-                    drawLine(cornerColor, Offset(right, top), Offset(right, top + cornerLength), strokeW)
+                        // Draw bounding border
+                        drawRect(
+                            color = Color(0xFF0066F5).copy(alpha = 0.75f),
+                            topLeft = Offset(left, top),
+                            size = Size(finderWidth, finderHeight),
+                            style = Stroke(
+                                width = 1.5.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
+                            )
+                        )
+                    }
 
-                    // 3. Bottom-Left L Guide
-                    drawLine(cornerColor, Offset(left, bottom), Offset(left + cornerLength, bottom), strokeW)
-                    drawLine(cornerColor, Offset(left, bottom), Offset(left, bottom - cornerLength), strokeW)
+                    // 2. Solid Corner Guides for high-tech scanning framing
+                    val strokeW = 4.5.dp.toPx()
+                    val cornerLength = if (selectedModeIdx == 2) 24.dp.toPx() else 34.dp.toPx()
+                    val cornerColor = if (selectedModeIdx == 2) Color(0xFF0066F5) else Color.White
 
-                    // 4. Bottom-Right L Guide
-                    drawLine(cornerColor, Offset(right, bottom), Offset(right - cornerLength, bottom), strokeW)
-                    drawLine(cornerColor, Offset(right, bottom), Offset(right, bottom - cornerLength), strokeW)
+                    // Top-Left corner guide
+                    drawLine(cornerColor, Offset(left - 1f, top), Offset(left + cornerLength, top), strokeW)
+                    drawLine(cornerColor, Offset(left, top - 1f), Offset(left, top + cornerLength), strokeW)
+
+                    // Top-Right corner guide
+                    drawLine(cornerColor, Offset(right + 1f, top), Offset(right - cornerLength, top), strokeW)
+                    drawLine(cornerColor, Offset(right, top - 1f), Offset(right, top + cornerLength), strokeW)
+
+                    // Bottom-Left corner guide
+                    drawLine(cornerColor, Offset(left - 1f, bottom), Offset(left + cornerLength, bottom), strokeW)
+                    drawLine(cornerColor, Offset(left, bottom + 1f), Offset(left, bottom - cornerLength), strokeW)
+
+                    // Bottom-Right corner guide
+                    drawLine(cornerColor, Offset(right + 1f, bottom), Offset(right - cornerLength, bottom), strokeW)
+                    drawLine(cornerColor, Offset(right, bottom + 1f), Offset(right, bottom - cornerLength), strokeW)
 
                     // If Passport (index 1) mode layout is active -> draw the dashed division line matching user image
                     if (selectedModeIdx == 1) {
